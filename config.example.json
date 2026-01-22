@@ -1,0 +1,9 @@
+{
+    "email": "your_email@example.com",
+    "password": "your_password",
+    "headless": false,
+    "retry_interval": 1,
+    "max_retries": 3,
+    "language": "en-US",
+    "service_id": "4996"
+}
