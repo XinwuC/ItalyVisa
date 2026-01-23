@@ -95,33 +95,15 @@ class PrenotamiBot:
                 self.page.click("button[type='submit'], button:has-text('Avanti'), button:has-text('Login'), button:has-text('Entra')")
             except Exception as e:
                 print(f"Could not auto-click login button: {e}")
-
-            print("If CAPTCHA is present, please solve it and click Login manually if the bot failed to do so.")
             
-            # Wait loop for result
-            start_time = time.time()
-            success = False
-            # Wait up to 2 minutes for user to solve captcha / site to respond
-            while time.time() - start_time < 120: 
-                # 1. Success Check: Look for body.loggedin
-                try:
-                    if "loggedin" in (self.page.get_attribute("body", "class") or ""):
-                        print("Login successful (body.loggedin detected)!")
-                        return True
-                except:
-                    pass
+            # 1. Success Check: Look for body.loggedin
+            try:
+                if "loggedin" in (self.page.get_attribute("body", "class") or ""):
+                    print("Login successful (body.loggedin detected)!")
+                    return True
+            except:
+                pass
 
-                # 2. Error Check (Fast fail)
-                if self.page.locator("text='An error occurred'").count() > 0 or \
-                   self.page.locator("text='Qualcosa non ha funzionato'").count() > 0 or \
-                   self.page.locator("text='Si è verificato un errore durante l’elaborazione della richiesta'").count() > 0:
-                    print("Detected server error page. Retrying login process...")
-                    break # Break inner wait loop, triggers next iteration of outer retry loop
-                
-                time.sleep(1)
-            else:
-                 print("Timed out waiting for login success or error.")
-            
             # If we reached here (break or timeout), we didn't return.
             # So we reload and try again.
             self.page.reload()
@@ -254,33 +236,8 @@ class PrenotamiBot:
                     self.page.reload()
                     continue
 
-                # 2. Check for Popup
-                # Wait a bit for popup or navigation
-                try:
-                    # Common popup selectors: .modal, .alert, .dialog
-                    popup_selector = ".modal-dialog, .alert-danger, div:has-text('booked'), div:has-text('esauriti')"
-                    popup = self.page.locator(popup_selector).first
-                    popup.wait_for(state="visible", timeout=3000)
-                    
-                    if popup.is_visible():
-                        text = popup.text_content()
-                        print(f"Popup detected: {text.strip()[:50]}...")
-                        # If it says "fully booked" or similar, we need to close and retry
-                        # Look for close button 'Ok', 'X', 'Chiudi'
-                        close_btn = self.page.locator("button:has-text('Ok'), button:has-text('OK'), button.close, button:has-text('Chiudi')").first
-                        if close_btn.is_visible():
-                            close_btn.click()
-                        
-                        # Wait before retry
-                        time.sleep(retry_interval)
-                        continue
-                except PlaywrightTimeoutError:
-                    # No popup appeared within timeout. 
-                    # Did we navigate?
-                    if "Services" not in self.page.url:
-                        print("URL changed, assuming success.")
-                        return True
-                    pass # Just continue loop
+                # Popup logic removed as requested
+
                 
             except Exception as e:
                 print(f"Error in waiting loop: {e}")
