@@ -4,8 +4,10 @@ import os
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 class PrenotamiBot:
-    def __init__(self, config_path='config.json'):
+    def __init__(self, config_path='config.json', browser_type=None):
         self.config = self._load_config(config_path)
+        if browser_type:
+            self.config['browser_type'] = browser_type
         self.playwright = None
         self.browser = None
         self.context = None
@@ -45,6 +47,11 @@ class PrenotamiBot:
                 headless=self.config.get('headless', False),
                 channel='msedge',
                 args=['--start-maximized']
+            )
+        elif browser_type == 'firefox':
+            print("Launching Firefox...")
+            self.browser = self.playwright.firefox.launch(
+                headless=self.config.get('headless', False)
             )
         else:
             # Default to Chrome
@@ -127,7 +134,6 @@ class PrenotamiBot:
 
             # If we reached here (break or timeout), we didn't return.
             # So we reload and try again.
-            # self.page.reload()
             time.sleep(2)
             
         raise Exception("Failed to login after multiple attempts.")
