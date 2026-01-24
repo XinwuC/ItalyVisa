@@ -39,15 +39,25 @@ class PrenotamiBot:
             self.browser = self.playwright.webkit.launch(
                 headless=self.config.get('headless', False)
             )
+        elif browser_type == 'edge':
+            print("Launching Microsoft Edge...")
+            self.browser = self.playwright.chromium.launch(
+                headless=self.config.get('headless', False),
+                channel='msedge',
+                args=['--start-maximized']
+            )
         else:
             # Default to Chrome
             print("Launching Chrome...")
             self.browser = self.playwright.chromium.launch(
                 headless=self.config.get('headless', False),
-                channel='chrome'
+                channel='chrome',
+                args=['--start-maximized']
             )
+        
         self.context = self.browser.new_context(
-             locale=self.config.get('language', 'en-US')
+             locale=self.config.get('language', 'en-US'),
+             no_viewport=True
         )
         self.page = self.context.new_page()
         # Add listener to prevent auto-dismissal of dialogs (alerts/confirms)
@@ -175,96 +185,34 @@ class PrenotamiBot:
         except Exception as e:
             print(f"Failed to switch language: {e}")
 
-    def navigate_to_booking(self):
-        # Ensure login before action
-        self.login()
-        
-        print("Navigating to Services...")
-        try:
-            self.page.goto("https://prenotami.esteri.it/Services", timeout=60000)
-            
-            # Direct access: Find the booking button with specific ID
-            service_id = self.config.get('service_id', '4996')
-            button_selector = f"a[href='/Services/Booking/{service_id}']"
-            print(f"Looking for booking button with selector: {button_selector}")
-            
-            self.page.wait_for_selector(button_selector, timeout=60000)
-            
-            buttons = self.page.locator(button_selector)
-            if buttons.count() > 0:
-                print("Found booking button(s).")
-                # buttons.first.click() # Removed as requested
-                return True
-            else:
-                print("Booking button not found.")
-                return False
-        except Exception as e:
-             print(f"Error navigating to booking: {e}")
-             return False
-
     def booking_retry_loop(self):
         """
-        Clicks the booking button repeatedly until successful or user stops.
+        Directly navigates to the booking page and retries until successful.
         """
-        max_retries = 1000 # essentially infinite, or as configured
-        retry_interval = self.config.get('retry_interval', 1)
+        service_id = self.config.get('service_id', '4996')
+        url = f"https://prenotami.esteri.it/Services/Booking/{service_id}"
         
-        print("Starting booking retry loop...")
+        print(f"Starting direct booking retry loop for: {url}")
         
         while True:
-            # Check login status periodically or before action
             try:
+                # 0. Check Login
                 self.login()
-            except Exception as e:
-                print(f"Login check failed inside loop: {e}")
                 
-            # 1. Click the button (we need to re-locate it as page might have refreshed/changed)
-            # Find the active tab/booking button again
-            try:
-                 # Check if we moved to the next page (Booking Form)
-                if "Services/Booking" in self.page.url:
+                # 1. Direct Navigate
+                print(f"Navigating to {url}...")
+                self.page.goto(url, wait_until="load", timeout=60000)
+                
+                # 2. Check Success: URL contains /Services/Booking
+                # Note: If it successfully stays on Booking or redirects to Booking form, it's a win.
+                if "/Services/Booking" in self.page.url:
                      print("Successfully moved to booking page!")
                      return True
                 
-                # Re-find the button directly
-                service_id = self.config.get('service_id', '4996')
-                button_selector = f"a[href='/Services/Booking/{service_id}']"
-                
-                try:
-                    self.page.wait_for_selector(button_selector, timeout=5000)
-                except:
-                    print("Button not found (wait timeout), refreshing...")
-                    self.page.reload()
-                    self.page.wait_for_load_state('networkidle')
-                    continue
-
-                buttons = self.page.locator(button_selector)
-                
-                # Check for popup BEFORE clicking
+                # 3. Check for popup (OK button)
                 try:
                     popup_selector = ".jconfirm-buttons button.btn.btn-blue"
-                    # Immediate check, no wait
-                    popup_btn = self.page.locator(popup_selector)
-                    if popup_btn.count() > 0:
-                        btn = popup_btn.first
-                        if btn.is_visible():
-                            print("Popup detected (pre-click). Clicking 'ok'...")
-                            btn.click()
-                except:
-                    pass
-
-                if buttons.count() > 0:
-                    print("Clicking Book button...")
-                    buttons.first.click()
-                else:
-                    print("Button not found (count 0), refreshing...")
-                    self.page.reload()
-                    continue
-
-                # Check for popup "ok" button with timeout
-                try:
-                    popup_selector = ".jconfirm-buttons button.btn.btn-blue"
-                    # Wait up to 2 seconds for popup to appear
+                    # Wait shortly for any potential error popup
                     self.page.wait_for_selector(popup_selector, timeout=2000)
                     
                     popup_btn = self.page.locator(popup_selector)
@@ -274,44 +222,27 @@ class PrenotamiBot:
                             print("Popup detected. Clicking 'ok'...")
                             btn.click()
                 except:
-                    # Timeout means no popup appeared, which is fine
                     pass
-
                 
+                # Small sleep before next attempt to avoid spamming too fast
+                time.sleep(self.config.get('retry_interval', 1))
+
             except Exception as e:
-                print(f"Error in waiting loop: {e}")
-                time.sleep(1)
-                self.page.reload()
+                print(f"Error in booking loop: {e}")
+                time.sleep(2)
 
     def run(self):
         self.start()
         try:
             self.login()
             
-            # Navigate to services - attempting English first
-            self.switch_language('en-US')
-            success = self.navigate_to_booking()
+            # Directly start the retry loop after login
+            self.booking_retry_loop()
             
-            if not success:
-                # Fallback to Italian logic
-                # User says: "Server side often switch back to IT automatically... skip switching to EN"
-                # User also says: "don't need to explicit switch back to IT"
-                print("English navigation seems to have failed or we are in IT default mode. Continuing...")
-                # We do NOT explicitly call switch_language('it-IT') unless necessary, 
-                # but if we are here because EN navigation failed, we assume we are just proceeding in whatever state (likely IT).
-                
-                # We retry navigation one more time (it matches broadly "switch to Italy instead" intent by just accepting the IT state)
-                success = self.navigate_to_booking()
-
-            if success:
-               self.booking_retry_loop()
-               # If loop returns True, we are on form page
-               # self.handle_form() # To be implemented
-               print("Process finished (at form stage). keeping browser open for manual entry.")
-               
-               # Keep alive for user
-               while True:
-                   time.sleep(1)
+            # Process finished - stay open for human
+            print("Process finished. keeping browser open for manual entry.")
+            while True:
+                time.sleep(1)
                    
         except Exception as e:
             print(f"An error occurred: {e}")
