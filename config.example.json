@@ -1,0 +1,9 @@
+{
+    "email": "your_email@example.com",
+    "password": "your_password",
+    "headless": false,
+    "language": "en-US",
+    "service_id": "4996",
+    "retry_interval": 1,
+    "browser_type": "chrome"
+}

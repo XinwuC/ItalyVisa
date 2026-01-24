@@ -32,15 +32,26 @@ class PrenotamiBot:
 
     def start(self):
         self.playwright = sync_playwright().start()
-        # Use channel='chrome' to use locally installed Chrome if available, otherwise chromium
-        self.browser = self.playwright.chromium.launch(
-            headless=self.config.get('headless', False),
-            channel='chrome'
-        )
+        browser_type = self.config.get('browser_type', 'chrome').lower()
+        
+        if browser_type == 'safari':
+            print("Launching Safari (WebKit)...")
+            self.browser = self.playwright.webkit.launch(
+                headless=self.config.get('headless', False)
+            )
+        else:
+            # Default to Chrome
+            print("Launching Chrome...")
+            self.browser = self.playwright.chromium.launch(
+                headless=self.config.get('headless', False),
+                channel='chrome'
+            )
         self.context = self.browser.new_context(
              locale=self.config.get('language', 'en-US')
         )
         self.page = self.context.new_page()
+        # Add listener to prevent auto-dismissal of dialogs (alerts/confirms)
+        self.page.on("dialog", lambda dialog: print(f"Dialog opened: {dialog.message}"))
 
     def stop(self):
         if self.context:
@@ -92,7 +103,7 @@ class PrenotamiBot:
             # Attempt to click login button
             print("Attempting to click Login button...")
             try:
-                self.page.click("button[type='submit'], button:has-text('Avanti'), button:has-text('Login'), button:has-text('Entra')")
+                self.page.click("#captcha-trigger")
             except Exception as e:
                 print(f"Could not auto-click login button: {e}")
             
@@ -106,7 +117,7 @@ class PrenotamiBot:
 
             # If we reached here (break or timeout), we didn't return.
             # So we reload and try again.
-            self.page.reload()
+            # self.page.reload()
             time.sleep(2)
             
         raise Exception("Failed to login after multiple attempts.")
@@ -181,8 +192,8 @@ class PrenotamiBot:
             
             buttons = self.page.locator(button_selector)
             if buttons.count() > 0:
-                print("Found booking button(s), clicking...")
-                buttons.first.click()
+                print("Found booking button(s).")
+                # buttons.first.click() # Removed as requested
                 return True
             else:
                 print("Booking button not found.")
@@ -211,7 +222,7 @@ class PrenotamiBot:
             # Find the active tab/booking button again
             try:
                  # Check if we moved to the next page (Booking Form)
-                if "Booking" in self.page.title() or self.page.locator("#BookingForm").count() > 0:
+                if "Services/Booking" in self.page.url:
                      print("Successfully moved to booking page!")
                      return True
                 
@@ -228,6 +239,20 @@ class PrenotamiBot:
                     continue
 
                 buttons = self.page.locator(button_selector)
+                
+                # Check for popup BEFORE clicking
+                try:
+                    popup_selector = ".jconfirm-buttons button.btn.btn-blue"
+                    # Immediate check, no wait
+                    popup_btn = self.page.locator(popup_selector)
+                    if popup_btn.count() > 0:
+                        btn = popup_btn.first
+                        if btn.is_visible():
+                            print("Popup detected (pre-click). Clicking 'ok'...")
+                            btn.click()
+                except:
+                    pass
+
                 if buttons.count() > 0:
                     print("Clicking Book button...")
                     buttons.first.click()
@@ -236,7 +261,21 @@ class PrenotamiBot:
                     self.page.reload()
                     continue
 
-                # Popup logic removed as requested
+                # Check for popup "ok" button with timeout
+                try:
+                    popup_selector = ".jconfirm-buttons button.btn.btn-blue"
+                    # Wait up to 2 seconds for popup to appear
+                    self.page.wait_for_selector(popup_selector, timeout=2000)
+                    
+                    popup_btn = self.page.locator(popup_selector)
+                    if popup_btn.count() > 0:
+                        btn = popup_btn.first
+                        if btn.is_visible():
+                            print("Popup detected. Clicking 'ok'...")
+                            btn.click()
+                except:
+                    # Timeout means no popup appeared, which is fine
+                    pass
 
                 
             except Exception as e:
