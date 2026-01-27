@@ -266,14 +266,6 @@ class PrenotamiBot:
     def fill_booking_form(self):
         print("Attempting to auto-fill form...")
         try:
-            # Check login before start
-            if not self.is_logged_in():
-                 return 'LOGOUT'
-                 
-            # Check Error page
-            if self.is_error_page():
-                return 'ERROR'
-
             print("Checking if form is ready (all dropdowns loaded)...")
             # Wait for dropdown options (confirm JS loaded)
             try:
@@ -283,143 +275,101 @@ class PrenotamiBot:
                     document.querySelector('#ddls_0') && document.querySelector('#ddls_0').options.length > 0 &&
                     document.querySelector('#ddls_1') && document.querySelector('#ddls_1').options.length > 0
                     """, 
-                    timeout=10000
+                    timeout=5000
                 )
             except PlaywrightTimeoutError:
-                print("Timeout waiting for ALL form dropdowns to load.")
-                return 'ERROR' # Treat as error/retry needed
+                print("Timeout waiting for ALL form dropdowns. Form might not be ready.")
+                return False
 
             form_valid = True
 
             # 1. Select Booking Type = Individual booking (Value 1)
-            # Value 1 corresponds to "Individual booking"
-            self.page.wait_for_selector("#typeofbookingddl", timeout=5000)
             self.page.select_option("#typeofbookingddl", "1")
-            print("Selected: Individual booking")
             
             # 2. Select Passport Type = Ordinary (Value 3)
-            # Value 3 corresponds to "Ordinary" handling based on HTML analysis
-            self.page.wait_for_selector("#ddls_0", timeout=5000)
             self.page.select_option("#ddls_0", "3")
-            print("Selected: Ordinary Passport")
             
             # 3. Reason for Visit = Tourism (Value 42)
-            self.page.wait_for_selector("#ddls_1", timeout=5000)
             self.page.select_option("#ddls_1", "42")
-            print("Selected: Tourism")
+            print("Selected: Individual, Ordinary, Tourism")
 
             # 4. Residence Address
             address = self.config.get('residence_address', '')
             if address:
                 self.page.fill("#DatiAddizionaliPrenotante_2___testo", address)
-                print(f"Filled Address: {address[:20]}...")
             else:
-                print("Error: 'residence_address' is missing in config.")
+                print("Error: 'residence_address' missing.")
                 form_valid = False
             
             # 5. File Upload
             file_path = self.config.get('residence_proof_file', '')
             if file_path and os.path.exists(file_path):
-                # HTML id="File_0"
                 self.page.set_input_files("#File_0", file_path)
-                print(f"Uploaded file: {os.path.basename(file_path)}")
             else:
-                print(f"Error: Invalid or missing 'residence_proof_file': {file_path}")
+                print(f"Error: Invalid 'residence_proof_file': {file_path}")
                 form_valid = False
 
             # 6. Notes
             notes = self.config.get('booking_notes', '')
             if notes:
                 self.page.fill("#BookingNotes", notes)
-                print("Filled Booking Notes")
 
             # 7. Privacy Policy
             self.page.check("#PrivacyCheck")
-            print("Checked Privacy Policy")
-
-            # Check for error before clicking
-            if self.is_error_page():
-                return 'ERROR'
 
             # 8. Forward
             if form_valid:
-                print("All required fields filled. Clicking Forward button...")
+                print("All required fields filled. Clicking Forward...")
                 self.page.click("#btnAvanti")
                 self.page.wait_for_load_state('networkidle')
-                # Wait a bit more for potential redirect
-                time.sleep(2)
-                
-                # Check outcome
-                if self.is_error_page():
-                    print("Hit Error page after clicking Forward.")
-                    return 'ERROR'
-
-                if "/BookingCalendar" in self.page.url:
-                    print("Successfully navigated to Calendar!")
-                    return 'SUCCESS'
-                else:
-                    print(f"Did not navigate to Calendar. Current URL: {self.page.url}")
-                    return 'ERROR'
+                return True
             else:
-                print("Form validation failed. Stopping before clicking Forward.")
-                return 'VALIDATION_FAILED' 
+                print("Validation failed. Not clicking Forward.")
+                return False
 
         except Exception as e:
             print(f"Error auto-filling form: {e}")
-            if not self.is_logged_in():
-                return 'LOGOUT'
-            return 'ERROR'
+            return False
 
     def run(self):
         self.start()
+        service_id = self.config.get('service_id', '4996')
+        booking_url = f"https://prenotami.esteri.it/Services/Booking/{service_id}"
         
         while True:
             try:
-                print("\n--- Starting/Restarting Flow ---")
-                
-                # Step 1: Login
-                print("Step 1: Logging in...")
-                if self.login():
-                    pass # Login successful or already logged in
-                else:
-                    print("Login failed. Retrying...")
-                    continue # Restart flow
+                # 1. Check Login
+                if not self.is_logged_in():
+                    print("Status: Not logged in. Action: Login")
+                    self.login()
+                    time.sleep(2)
+                    continue
 
-                # Step 2: Switch Language
-                print("Step 2: Switching Language...")
+                # 2. Check Language
                 self.switch_language("en")
-                
-                # Step 3: Go to Booking Page
-                print("Step 3: Navigating to Booking Page...")
-                nav_result = self.booking_retry_loop()
-                
-                if nav_result == 'LOGOUT':
-                    print("Logged out during navigation. Restarting...")
-                    continue
-                elif nav_result != 'SUCCESS':
-                    print("Failed to reach booking page. Retrying...")
-                    continue
-                
-                # Step 4: Fill Form
-                print("Step 4: Filling Form...")
-                fill_result = self.fill_booking_form()
-                
-                if fill_result == 'LOGOUT':
-                    print("Logged out during form fill. Restarting...")
-                    continue
-                elif fill_result == 'ERROR':
-                    print("Error during form fill. Retrying booking navigation...")
-                    # We go back to booking loop to reload the page cleanly
-                    continue
-                elif fill_result == 'VALIDATION_FAILED':
-                    print("Validation failed. Please fix config. Pausing.")
-                    break # Stop to let user fix config
-                
-                # Step 5: Handover
-                if fill_result == 'SUCCESS':
-                    print("Step 5: Form submitted successfully! Handing over to user.")
+
+                current_url = self.page.url
+
+                # 3. Check URL Actions
+                if "/BookingCalendar" in current_url:
+                    print(f"Status: Booking Calendar reached ({current_url}). Action: Handover")
                     self.play_alert_sound()
                     break
+
+                elif "/Services/Booking" in current_url:
+                    print(f"Status: Booking Form ({current_url}). Action: Fill & Submit")
+                    if self.fill_booking_form():
+                        # If submission apparently successful, check URL next loop
+                        pass
+                
+                else:
+                    # All else -> Go to Booking Page
+                    print(f"Status: Other URL ({current_url}). Action: Go to Booking Page")
+                    if current_url != booking_url:
+                        self.page.goto(booking_url)
+                        self.page.wait_for_load_state('networkidle')
+                
+                time.sleep(self.config.get('retry_interval', 1))
 
             except Exception as e:
                 print(f"Critical error in main loop: {e}")
