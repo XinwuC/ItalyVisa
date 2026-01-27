@@ -1,6 +1,7 @@
 import json
 import time
 import os
+import platform
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 class PrenotamiBot:
@@ -95,7 +96,7 @@ class PrenotamiBot:
             
             print("Navigating to login page...")
             try:
-                self.page.goto("https://prenotami.esteri.it/", timeout=60000)
+                self.page.goto(f"https://prenotami.esteri.it/Home?ReturnUrl=%2fServices%2fBooking%2f{self.config['service_id']}", timeout=60000)
             except PlaywrightTimeoutError:
                 print("Timeout loading login page, retrying...")
                 self.page.reload()
@@ -192,9 +193,22 @@ class PrenotamiBot:
         except Exception as e:
             print(f"Failed to switch language: {e}")
 
+    def is_logged_in(self):
+        try:
+            # Check body class or specific element
+            if "loggedin" in (self.page.get_attribute("body", "class") or ""):
+                return True
+            return False
+        except:
+            return False
+
+    def is_error_page(self):
+        return "Error" in self.page.url
+
     def booking_retry_loop(self):
         """
         Directly navigates to the booking page and retries until successful.
+        Returns code: 'SUCCESS', 'LOGOUT', 'ERROR' (though error usually means retry)
         """
         service_id = self.config.get('service_id', '4996')
         url = f"https://prenotami.esteri.it/Services/Booking/{service_id}"
@@ -203,57 +217,249 @@ class PrenotamiBot:
         
         while True:
             try:
-                # 0. Check Login
-                self.login()
+                # 0. Check Login Status
+                if not self.is_logged_in():
+                    print("Detected logout in booking loop. Restarting flow.")
+                    return 'LOGOUT'
 
                 # 1. Direct Navigate
                 print(f"Navigating to {url}...")
-                self.page.goto(url, wait_until="load", timeout=60000)
+                if url != self.page.url:
+                    self.page.goto(url, wait_until="load", timeout=60000)
                 
+                # Check for Error page immediately after navigation
+                if self.is_error_page():
+                    print("Hit Error page. Retrying...")
+                    time.sleep(self.config.get('retry_interval', 1))
+                    continue
+
                 # 2. Check Success: URL contains /Services/Booking
-                # Note: If it successfully stays on Booking or redirects to Booking form, it's a win.
                 if "/Services/Booking" in self.page.url:
                     self.switch_language("en")
                     print("Successfully moved to booking page!")
-                    return True
+                    return 'SUCCESS'
                 
                 # 3. Check for popup (OK button)
                 try:
                     popup_selector = ".jconfirm-buttons button.btn.btn-blue"
                     # Wait shortly for any potential error popup
-                    self.page.wait_for_selector(popup_selector, timeout=2000)
-                    
-                    popup_btn = self.page.locator(popup_selector)
-                    if popup_btn.count() > 0:
-                        btn = popup_btn.first
-                        if btn.is_visible():
-                            print("Popup detected. Clicking 'ok'...")
-                            btn.click()
+                    try:
+                        self.page.wait_for_selector(popup_selector, timeout=2000)
+                        popup_btn = self.page.locator(popup_selector)
+                        if popup_btn.count() > 0:
+                            btn = popup_btn.first
+                            if btn.is_visible():
+                                print("Popup detected. Clicking 'ok'...")
+                                btn.click()
+                    except:
+                        pass
                 except:
                     pass
                 
-                # Small sleep before next attempt to avoid spamming too fast
+                # Small sleep before next attempt
                 time.sleep(self.config.get('retry_interval', 1))
 
             except Exception as e:
                 print(f"Error in booking loop: {e}")
                 time.sleep(2)
 
+    def fill_booking_form(self):
+        print("Attempting to auto-fill form...")
+        try:
+            # Check login before start
+            if not self.is_logged_in():
+                 return 'LOGOUT'
+                 
+            # Check Error page
+            if self.is_error_page():
+                return 'ERROR'
+
+            print("Checking if form is ready (all dropdowns loaded)...")
+            # Wait for dropdown options (confirm JS loaded)
+            try:
+                self.page.wait_for_function(
+                    """
+                    document.querySelector('#typeofbookingddl') && document.querySelector('#typeofbookingddl').options.length > 0 &&
+                    document.querySelector('#ddls_0') && document.querySelector('#ddls_0').options.length > 0 &&
+                    document.querySelector('#ddls_1') && document.querySelector('#ddls_1').options.length > 0
+                    """, 
+                    timeout=10000
+                )
+            except PlaywrightTimeoutError:
+                print("Timeout waiting for ALL form dropdowns to load.")
+                return 'ERROR' # Treat as error/retry needed
+
+            form_valid = True
+
+            # 1. Select Booking Type = Individual booking (Value 1)
+            # Value 1 corresponds to "Individual booking"
+            self.page.wait_for_selector("#typeofbookingddl", timeout=5000)
+            self.page.select_option("#typeofbookingddl", "1")
+            print("Selected: Individual booking")
+            
+            # 2. Select Passport Type = Ordinary (Value 3)
+            # Value 3 corresponds to "Ordinary" handling based on HTML analysis
+            self.page.wait_for_selector("#ddls_0", timeout=5000)
+            self.page.select_option("#ddls_0", "3")
+            print("Selected: Ordinary Passport")
+            
+            # 3. Reason for Visit = Tourism (Value 42)
+            self.page.wait_for_selector("#ddls_1", timeout=5000)
+            self.page.select_option("#ddls_1", "42")
+            print("Selected: Tourism")
+
+            # 4. Residence Address
+            address = self.config.get('residence_address', '')
+            if address:
+                self.page.fill("#DatiAddizionaliPrenotante_2___testo", address)
+                print(f"Filled Address: {address[:20]}...")
+            else:
+                print("Error: 'residence_address' is missing in config.")
+                form_valid = False
+            
+            # 5. File Upload
+            file_path = self.config.get('residence_proof_file', '')
+            if file_path and os.path.exists(file_path):
+                # HTML id="File_0"
+                self.page.set_input_files("#File_0", file_path)
+                print(f"Uploaded file: {os.path.basename(file_path)}")
+            else:
+                print(f"Error: Invalid or missing 'residence_proof_file': {file_path}")
+                form_valid = False
+
+            # 6. Notes
+            notes = self.config.get('booking_notes', '')
+            if notes:
+                self.page.fill("#BookingNotes", notes)
+                print("Filled Booking Notes")
+
+            # 7. Privacy Policy
+            self.page.check("#PrivacyCheck")
+            print("Checked Privacy Policy")
+
+            # Check for error before clicking
+            if self.is_error_page():
+                return 'ERROR'
+
+            # 8. Forward
+            if form_valid:
+                print("All required fields filled. Clicking Forward button...")
+                self.page.click("#btnAvanti")
+                self.page.wait_for_load_state('networkidle')
+                # Wait a bit more for potential redirect
+                time.sleep(2)
+                
+                # Check outcome
+                if self.is_error_page():
+                    print("Hit Error page after clicking Forward.")
+                    return 'ERROR'
+
+                if "/BookingCalendar" in self.page.url:
+                    print("Successfully navigated to Calendar!")
+                    return 'SUCCESS'
+                else:
+                    print(f"Did not navigate to Calendar. Current URL: {self.page.url}")
+                    return 'ERROR'
+            else:
+                print("Form validation failed. Stopping before clicking Forward.")
+                return 'VALIDATION_FAILED' 
+
+        except Exception as e:
+            print(f"Error auto-filling form: {e}")
+            if not self.is_logged_in():
+                return 'LOGOUT'
+            return 'ERROR'
+
     def run(self):
         self.start()
+        
+        while True:
+            try:
+                print("\n--- Starting/Restarting Flow ---")
+                
+                # Step 1: Login
+                print("Step 1: Logging in...")
+                if self.login():
+                    pass # Login successful or already logged in
+                else:
+                    print("Login failed. Retrying...")
+                    continue # Restart flow
+
+                # Step 2: Switch Language
+                print("Step 2: Switching Language...")
+                self.switch_language("en")
+                
+                # Step 3: Go to Booking Page
+                print("Step 3: Navigating to Booking Page...")
+                nav_result = self.booking_retry_loop()
+                
+                if nav_result == 'LOGOUT':
+                    print("Logged out during navigation. Restarting...")
+                    continue
+                elif nav_result != 'SUCCESS':
+                    print("Failed to reach booking page. Retrying...")
+                    continue
+                
+                # Step 4: Fill Form
+                print("Step 4: Filling Form...")
+                fill_result = self.fill_booking_form()
+                
+                if fill_result == 'LOGOUT':
+                    print("Logged out during form fill. Restarting...")
+                    continue
+                elif fill_result == 'ERROR':
+                    print("Error during form fill. Retrying booking navigation...")
+                    # We go back to booking loop to reload the page cleanly
+                    continue
+                elif fill_result == 'VALIDATION_FAILED':
+                    print("Validation failed. Please fix config. Pausing.")
+                    break # Stop to let user fix config
+                
+                # Step 5: Handover
+                if fill_result == 'SUCCESS':
+                    print("Step 5: Form submitted successfully! Handing over to user.")
+                    self.play_alert_sound()
+                    break
+
+            except Exception as e:
+                print(f"Critical error in main loop: {e}")
+                time.sleep(5)
+            
+        print("Process finished. Keeping browser open.")
+        while True:
+            time.sleep(1)
+
+    def play_alert_sound(self):
+        """
+        Plays a system alert sound for 5 minutes.
+        Supports macOS (afplay/say) and Windows (winsound). Fallback to generic beep.
+        """
         try:
-            self.login()
+            end_time = time.time() + (5 * 60) # 5 minutes from now
+            print("Playing ALARM sound for 5 minutes...")
             
-            # Directly start the retry loop after login
-            self.booking_retry_loop()
-            
-            # Process finished - stay open for human
-            print("Process finished. keeping browser open for manual entry.")
-            while True:
-                time.sleep(1)
-                   
+            system_name = platform.system()
+
+            if system_name == 'Darwin':
+                # Play a system sound on macOS
+                while time.time() < end_time:
+                    # Glass sound + Voice
+                    os.system('afplay /System/Library/Sounds/Glass.aiff')
+                    os.system('say "Booking ready! Check now!"')
+                    time.sleep(1) 
+            elif system_name == 'Windows':
+                # Windows
+                import winsound
+                while time.time() < end_time:
+                    # Siren-like effect
+                    winsound.Beep(1000, 400)
+                    winsound.Beep(2500, 400)
+            else:
+                # Fallback for other OS
+                while time.time() < end_time:
+                    print('\a') # Beep
+                    time.sleep(1)
         except Exception as e:
-            print(f"An error occurred: {e}")
-        finally:
-            print("Session ended.")
+            print(f"Sound error: {e}")
+            print('\a') # Fallback beep
             # self.stop() # Don't stop automatically so user can see result
