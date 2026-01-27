@@ -84,6 +84,7 @@ class PrenotamiBot:
             body_class = self.page.get_attribute("body", "class") or ""
             if "loggedin" in body_class:
                 print("Already logged in (body.loggedin detected).")
+                self.switch_language("en")
                 return True
         except Exception:
             pass # Continue to login flow
@@ -204,7 +205,7 @@ class PrenotamiBot:
             try:
                 # 0. Check Login
                 self.login()
-                
+
                 # 1. Direct Navigate
                 print(f"Navigating to {url}...")
                 self.page.goto(url, wait_until="load", timeout=60000)
@@ -212,8 +213,9 @@ class PrenotamiBot:
                 # 2. Check Success: URL contains /Services/Booking
                 # Note: If it successfully stays on Booking or redirects to Booking form, it's a win.
                 if "/Services/Booking" in self.page.url:
-                     print("Successfully moved to booking page!")
-                     return True
+                    self.switch_language("en")
+                    print("Successfully moved to booking page!")
+                    return True
                 
                 # 3. Check for popup (OK button)
                 try:
