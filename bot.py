@@ -90,7 +90,7 @@ class PrenotamiBot:
         except Exception:
             pass # Continue to login flow
 
-        max_retries = 5
+        max_retries = self.config.get('max_login_retries', 100)
         for attempt in range(max_retries):
             print(f"Login attempt {attempt + 1}/{max_retries}...")
             
@@ -381,12 +381,13 @@ class PrenotamiBot:
 
     def play_alert_sound(self):
         """
-        Plays a system alert sound for 5 minutes.
+        Plays a system alert sound for configured duration (default 10 mins).
         Supports macOS (afplay/say) and Windows (winsound). Fallback to generic beep.
         """
         try:
-            end_time = time.time() + (5 * 60) # 5 minutes from now
-            print("Playing ALARM sound for 5 minutes...")
+            duration_mins = self.config.get('alert_duration_minutes', 10)
+            end_time = time.time() + (duration_mins * 60)
+            print(f"Playing ALARM sound for {duration_mins} minutes...")
             
             system_name = platform.system()
 

@@ -6,6 +6,8 @@
     "service_id": "4996",
     "retry_interval": 1,
     "browser_type": "chrome",
+    "max_login_retries": 100,
+    "alert_duration_minutes": 10,
     "residence_address": "123 Example St, City, Country",
     "residence_proof_file": "/absolute/path/to/proof.pdf",
     "booking_notes": "Visita per turismo"
