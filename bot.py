@@ -1,8 +1,9 @@
 import json
 import time
 import os
+import sys
 import platform
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 
 class PrenotamiBot:
     def __init__(self, config_path='config.json', browser_type=None):
@@ -80,118 +81,85 @@ class PrenotamiBot:
             self.playwright.stop()
 
     def login(self):
-        # 1. Check if already logged in using body class
-        try:
-            body_class = self.page.get_attribute("body", "class") or ""
-            if "loggedin" in body_class:
-                print("Already logged in (body.loggedin detected).")
-                self.switch_language("en")
-                return True
-        except Exception:
-            pass # Continue to login flow
+        """
+        Attempts to log in once. Returns True if successful or already logged in, False otherwise.
+        """
+        if self.is_logged_in():
+             print("Already logged in.")
+             return True
 
-        max_retries = self.config.get('max_login_retries', 100)
-        for attempt in range(max_retries):
-            print(f"Login attempt {attempt + 1}/{max_retries}...")
-            
-            print("Navigating to login page...")
-            try:
-                self.page.goto(f"https://prenotami.esteri.it/Home?ReturnUrl=%2fServices%2fBooking%2f{self.config['service_id']}", timeout=60000)
-            except PlaywrightTimeoutError:
-                print("Timeout loading login page, retrying...")
-                self.page.reload()
-                continue
-            
-            # Re-check login status after navigation (cookies might persist)
-            try:
-                if "loggedin" in (self.page.get_attribute("body", "class") or ""):
-                     print("Already logged in.")
-                     return True
-            except:
-                pass
+        service_id = self.config.get('service_id', '4996')
+        # login_url = f"https://prenotami.esteri.it/Home?ReturnUrl=%2fServices%2fBooking%2f{service_id}"
+        login_url = f"https://prenotami.esteri.it/"
 
-            print("Filling credentials...")
-            try:
-                self.page.fill("#login-email", self.config['email'])
-                self.page.fill("#login-password", self.config['password'])
-            except Exception as e:
-                print(f"Error filling form (might be on error page): {e}")
-                self.page.reload()
-                continue
-            
-            # Attempt to click login button
-            print("Attempting to click Login button...")
-            try:
-                self.page.click("#captcha-trigger")
-            except Exception as e:
-                print(f"Could not auto-click login button: {e}")
-            
-            # 1. Success Check: Look for body.loggedin
-            try:
-                if "loggedin" in (self.page.get_attribute("body", "class") or ""):
-                    print("Login successful (body.loggedin detected)!")
-                    return True
-            except:
-                pass
+        print(f"Loggin in...")
+        # Navigate
+        self.page.goto(login_url, timeout=60000)
+        
+        # Check if session persisted
+        if self.is_logged_in():
+            print("Already logged in after navigation.")
+            return True
 
-            # If we reached here (break or timeout), we didn't return.
-            # So we reload and try again.
-            time.sleep(2)
-            
-        raise Exception("Failed to login after multiple attempts.")
+        # Fill & Submit
+        print("Filling credentials...")
+        self.page.fill("#login-email", self.config['email'])
+        self.page.fill("#login-password", self.config['password'])
+        self.page.click("#captcha-trigger")
+        
+        # Wait for navigation/reload
+        self.page.wait_for_load_state('networkidle', timeout=10000)
+        
+        # Verify
+        if self.is_logged_in():
+            print("Login successful!")
+            return True
+
+        return False
 
     def switch_language(self, lang_code):
         """
         Switches the website language using specific href tags.
         """
-        print(f"Checking language status for target: {lang_code}...")
-        try:
-            # Selectors based on user info
-            # IT: <a class="" href="/Language/ChangeLanguage?lang=1">ITA</a>
-            # EN: <a class="active" href="/Language/ChangeLanguage?lang=2">ENG</a>
-            
-            # Note: The selectors are precise based on href
-            it_selector = "a[href*='/Language/ChangeLanguage?lang=1']"
-            en_selector = "a[href*='/Language/ChangeLanguage?lang=2']"
+        # Selectors based on user info
+        # IT: <a class="" href="/Language/ChangeLanguage?lang=1">ITA</a>
+        # EN: <a class="active" href="/Language/ChangeLanguage?lang=2">ENG</a>
+        
+        # Note: The selectors are precise based on href
+        it_selector = "a[href*='/Language/ChangeLanguage?lang=1']"
+        en_selector = "a[href*='/Language/ChangeLanguage?lang=2']"
 
-            is_en_target = "en" in lang_code.lower()
-            
-            # Check current state
-            en_btn = self.page.locator(en_selector).first
-            it_btn = self.page.locator(it_selector).first
-            
-            # If buttons aren't found, we can't switch
-            if en_btn.count() == 0 or it_btn.count() == 0:
-                print("Language buttons not found. Skipping switch.")
+        is_en_target = "en" in lang_code.lower()
+        
+        # Check current state
+        en_btn = self.page.locator(en_selector).first
+        it_btn = self.page.locator(it_selector).first
+        
+        # If buttons aren't found, we can't switch
+        if en_btn.count() == 0 or it_btn.count() == 0:
+            # print("Language buttons not found. Skipping switch.")
+            return
+
+        en_active = "active" in (en_btn.get_attribute("class") or "")
+        it_active = "active" in (it_btn.get_attribute("class") or "")
+
+        if is_en_target:
+            if en_active:
+                print("English is already active.")
                 return
-
-            en_active = "active" in (en_btn.get_attribute("class") or "")
-            it_active = "active" in (it_btn.get_attribute("class") or "")
-
-            print(f"Current State - EN Active: {en_active}, IT Active: {it_active}")
-
-            if is_en_target:
-                if en_active:
-                    print("English is already active.")
-                    return
-                # User advised: If server switches back to IT, skip switching to EN.
-                # We will try ONCE. If we are here, it means EN is not active.
-                print("Switching to English...")
-                en_btn.click()
-                self.page.wait_for_load_state('networkidle')
-            else:
-                # Target is IT
-                # User advised: "you don't need to explicit switch back to IT"
-                if it_active:
-                     print("Italian is already active.")
-                     return
-                
-                print("Switching to Italian (Explicitly requested)...")
-                it_btn.click()
-                self.page.wait_for_load_state('networkidle')
-
-        except Exception as e:
-            print(f"Failed to switch language: {e}")
+            # User advised: If server switches back to IT, skip switching to EN.
+            # We will try ONCE. If we are here, it means EN is not active.
+            print("Switching to English...")
+            en_btn.click()
+            self.page.wait_for_load_state('networkidle')
+        else:
+            if it_active:
+                print("Italian is already active.")
+                return
+            
+            print("Switching to Italian (Explicitly requested)...")
+            it_btn.click()
+            self.page.wait_for_load_state('networkidle')
 
     def is_logged_in(self):
         try:
@@ -205,130 +173,78 @@ class PrenotamiBot:
     def is_error_page(self):
         return "Error" in self.page.url
 
-    def booking_retry_loop(self):
+    def is_captcha_page(self):
         """
-        Directly navigates to the booking page and retries until successful.
-        Returns code: 'SUCCESS', 'LOGOUT', 'ERROR' (though error usually means retry)
+        Checks if the current URL suggests a Captcha/WAF block.
         """
-        service_id = self.config.get('service_id', '4996')
-        url = f"https://prenotami.esteri.it/Services/Booking/{service_id}"
-        
-        print(f"Starting direct booking retry loop for: {url}")
-        
-        while True:
-            try:
-                # 0. Check Login Status
-                if not self.is_logged_in():
-                    print("Detected logout in booking loop. Restarting flow.")
-                    return 'LOGOUT'
+        url = self.page.url.lower()
+        # Common keywords for WAF/Captcha pages
+        keywords = ['captcha', 'waf', 'challenge', 'block', 'security', 'waiting']
+        return any(x in url for x in keywords)
 
-                # 1. Direct Navigate
-                print(f"Navigating to {url}...")
-                if url != self.page.url:
-                    self.page.goto(url, wait_until="load", timeout=60000)
-                
-                # Check for Error page immediately after navigation
-                if self.is_error_page():
-                    print("Hit Error page. Retrying...")
-                    time.sleep(self.config.get('retry_interval', 1))
-                    continue
-
-                # 2. Check Success: URL contains /Services/Booking
-                if "/Services/Booking" in self.page.url:
-                    self.switch_language("en")
-                    print("Successfully moved to booking page!")
-                    return 'SUCCESS'
-                
-                # 3. Check for popup (OK button)
-                try:
-                    popup_selector = ".jconfirm-buttons button.btn.btn-blue"
-                    # Wait shortly for any potential error popup
-                    try:
-                        self.page.wait_for_selector(popup_selector, timeout=2000)
-                        popup_btn = self.page.locator(popup_selector)
-                        if popup_btn.count() > 0:
-                            btn = popup_btn.first
-                            if btn.is_visible():
-                                print("Popup detected. Clicking 'ok'...")
-                                btn.click()
-                    except:
-                        pass
-                except:
-                    pass
-                
-                # Small sleep before next attempt
-                time.sleep(self.config.get('retry_interval', 1))
-
-            except Exception as e:
-                print(f"Error in booking loop: {e}")
-                time.sleep(2)
 
     def fill_booking_form(self):
         print("Attempting to auto-fill form...")
+        
+        print("Checking if form is ready (all dropdowns loaded)...")
+        # Wait for dropdown options (confirm JS loaded)
         try:
-            print("Checking if form is ready (all dropdowns loaded)...")
-            # Wait for dropdown options (confirm JS loaded)
-            try:
-                self.page.wait_for_function(
-                    """
-                    document.querySelector('#typeofbookingddl') && document.querySelector('#typeofbookingddl').options.length > 0 &&
-                    document.querySelector('#ddls_0') && document.querySelector('#ddls_0').options.length > 0 &&
-                    document.querySelector('#ddls_1') && document.querySelector('#ddls_1').options.length > 0
-                    """, 
-                    timeout=5000
-                )
-            except PlaywrightTimeoutError:
-                print("Timeout waiting for ALL form dropdowns. Form might not be ready.")
-                return False
+            self.page.wait_for_function(
+                """
+                document.querySelector('#typeofbookingddl') && document.querySelector('#typeofbookingddl').options.length > 0 &&
+                document.querySelector('#ddls_0') && document.querySelector('#ddls_0').options.length > 0 &&
+                document.querySelector('#ddls_1') && document.querySelector('#ddls_1').options.length > 0
+                """, 
+                timeout=5000
+            )
+        except PlaywrightTimeoutError:
+            print("Timeout waiting for ALL form dropdowns. Form might not be ready.")
+            return False
 
-            form_valid = True
+        form_valid = True
 
-            # 1. Select Booking Type = Individual booking (Value 1)
-            self.page.select_option("#typeofbookingddl", "1")
-            
-            # 2. Select Passport Type = Ordinary (Value 3)
-            self.page.select_option("#ddls_0", "3")
-            
-            # 3. Reason for Visit = Tourism (Value 42)
-            self.page.select_option("#ddls_1", "42")
-            print("Selected: Individual, Ordinary, Tourism")
+        # 1. Select Booking Type = Individual booking (Value 1)
+        self.page.select_option("#typeofbookingddl", "1")
+        
+        # 2. Select Passport Type = Ordinary (Value 3)
+        self.page.select_option("#ddls_0", "3")
+        
+        # 3. Reason for Visit = Tourism (Value 42)
+        self.page.select_option("#ddls_1", "42")
+        print("Selected: Individual, Ordinary, Tourism")
 
-            # 4. Residence Address
-            address = self.config.get('residence_address', '')
-            if address:
-                self.page.fill("#DatiAddizionaliPrenotante_2___testo", address)
-            else:
-                print("Error: 'residence_address' missing.")
-                form_valid = False
-            
-            # 5. File Upload
-            file_path = self.config.get('residence_proof_file', '')
-            if file_path and os.path.exists(file_path):
-                self.page.set_input_files("#File_0", file_path)
-            else:
-                print(f"Error: Invalid 'residence_proof_file': {file_path}")
-                form_valid = False
+        # 4. Residence Address
+        address = self.config.get('residence_address', '')
+        if address:
+            self.page.fill("#DatiAddizionaliPrenotante_2___testo", address)
+        else:
+            print("Error: 'residence_address' missing.")
+            form_valid = False
+        
+        # 5. File Upload
+        file_path = self.config.get('residence_proof_file', '')
+        if file_path and os.path.exists(file_path):
+            self.page.set_input_files("#File_0", file_path)
+        else:
+            print(f"Error: Invalid 'residence_proof_file': {file_path}")
+            form_valid = False
 
-            # 6. Notes
-            notes = self.config.get('booking_notes', '')
-            if notes:
-                self.page.fill("#BookingNotes", notes)
+        # 6. Notes
+        notes = self.config.get('booking_notes', '')
+        if notes:
+            self.page.fill("#BookingNotes", notes)
 
-            # 7. Privacy Policy
-            self.page.check("#PrivacyCheck")
+        # 7. Privacy Policy
+        self.page.check("#PrivacyCheck")
 
-            # 8. Forward
-            if form_valid:
-                print("All required fields filled. Clicking Forward...")
-                self.page.click("#btnAvanti")
-                self.page.wait_for_load_state('networkidle')
-                return True
-            else:
-                print("Validation failed. Not clicking Forward.")
-                return False
-
-        except Exception as e:
-            print(f"Error auto-filling form: {e}")
+        # 8. Forward
+        if form_valid:
+            print("All required fields filled. Clicking Forward...")
+            self.page.click("#btnAvanti")
+            self.page.wait_for_load_state('networkidle')
+            return True
+        else:
+            print("Validation failed. Not clicking Forward.")
             return False
 
     def run(self):
@@ -338,20 +254,19 @@ class PrenotamiBot:
         
         while True:
             try:
-                # 1. Check Login
-                if not self.is_logged_in():
-                    print("Status: Not logged in. Action: Login")
-                    self.login()
-                    time.sleep(2)
-                    continue
-
-                # 2. Check Language
-                self.switch_language("en")
-
                 current_url = self.page.url
 
-                # 3. Check URL Actions
-                if "/BookingCalendar" in current_url:
+                # 1. Check URL Actions
+                if self.is_captcha_page():
+                    print(f"Status: Captcha/WAF detected ({current_url}). Action: Wait for User")
+                    self.play_alert_sound()
+                    # Wait for user to change page
+                    while self.is_captcha_page():
+                         time.sleep(1)
+                    print("Captcha solved/URL changed. Resuming...")
+                    continue
+
+                elif "/BookingCalendar" in current_url:
                     print(f"Status: Booking Calendar reached ({current_url}). Action: Handover")
                     self.play_alert_sound()
                     break
@@ -362,18 +277,27 @@ class PrenotamiBot:
                         # If submission apparently successful, check URL next loop
                         pass
                 
-                else:
+                elif self.login():
+                    self.switch_language("en")
                     # All else -> Go to Booking Page
                     print(f"Status: Other URL ({current_url}). Action: Go to Booking Page")
                     if current_url != booking_url:
                         self.page.goto(booking_url)
-                        self.page.wait_for_load_state('networkidle')
-                
-                time.sleep(self.config.get('retry_interval', 1))
-
+                        # We don't wait indefinitely here, just enough to start loading
+                        try:
+                            self.page.wait_for_load_state('networkidle', timeout=10000)
+                        except:
+                            pass
+            except PlaywrightError as e:
+                # Check for "Target page, context or browser has been closed"
+                if "Target page, context or browser has been closed" in str(e):
+                    print("Browser was closed by user. Exiting...")
+                    sys.exit(0)
+                print(f"Playwright error in main loop: {e}")
+                time.sleep(self.config.get('retry_interval', 1))    
             except Exception as e:
                 print(f"Critical error in main loop: {e}")
-                time.sleep(5)
+                time.sleep(self.config.get('retry_interval', 1))    
             
         print("Process finished. Keeping browser open.")
         while True:
