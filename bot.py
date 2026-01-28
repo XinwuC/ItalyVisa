@@ -48,12 +48,17 @@ class PrenotamiBot:
             self.browser = self.playwright.chromium.launch(
                 headless=self.config.get('headless', False),
                 channel='msedge',
-                args=['--start-maximized']
+                args=['--start-maximized', '--disable-features=Translate']
             )
         elif browser_type == 'firefox':
             print("Launching Firefox...")
             self.browser = self.playwright.firefox.launch(
-                headless=self.config.get('headless', False)
+                headless=self.config.get('headless', False),
+                firefox_user_prefs={
+                    "browser.translations.enable": False,
+                    "browser.translations.panelShown": False,
+                    "browser.translations.autoTranslate": False
+                }
             )
         else:
             # Default to Chrome
@@ -61,7 +66,7 @@ class PrenotamiBot:
             self.browser = self.playwright.chromium.launch(
                 headless=self.config.get('headless', False),
                 channel='chrome',
-                args=['--start-maximized']
+                args=['--start-maximized', '--disable-features=Translate']
             )
         
         self.context = self.browser.new_context(
@@ -177,11 +182,7 @@ class PrenotamiBot:
         """
         Checks if the current URL suggests a Captcha/WAF block.
         """
-        url = self.page.url.lower()
-        # Common keywords for WAF/Captcha pages
-        keywords = ['captcha', 'waf', 'challenge', 'block', 'security', 'waiting']
-        return any(x in url for x in keywords)
-
+        return "perfdrive.com" in self.page.url.lower()
 
     def fill_booking_form(self):
         print("Attempting to auto-fill form...")
