@@ -31,7 +31,12 @@ class PrenotamiBot:
         disable_extensions = self.config.get('disable_extensions', False)
         headless = self.config.get('headless', False)
         
-        launch_args = ['--start-maximized', '--disable-features=Translate']
+        launch_args = [
+            '--start-maximized',
+            '--disable-features=Translate',
+            '--disable-dev-shm-usage',
+            '--disable-blink-features=AutomationControlled',
+        ]
         if disable_extensions:
             launch_args.append('--disable-extensions')
         
@@ -74,10 +79,10 @@ class PrenotamiBot:
                 self.context = browser_engine.launch_persistent_context(
                     user_data_dir=chrome_profile_path,
                     headless=headless,
-                    channel='chrome' if browser_type_str == 'chrome' else 'msedge',
                     args=launch_args,
+                    ignore_default_args=['--no-sandbox', '--enable-automation'],
+                    channel='chrome' if browser_type_str == 'chrome' else 'msedge',
                     no_viewport=True, # Important to match window size
-                    ignore_default_args=["--enable-automation"],
                     timeout=60000 
                 )
                 logging.info("Browser launched successfully.")
@@ -106,7 +111,40 @@ class PrenotamiBot:
                 logging.error(f"Failed to check page URL: {e}")
         
         # Common setup
-        self.page.on("dialog", lambda dialog: logging.info(f"Dialog opened: {dialog.message}"))
+        # Inject script to hide webdriver property (stealth mode)
+        if self.context:
+            self.context.add_init_script("""
+                // Common stealth: Pass generic webdriver checks
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                
+                // Pass chrome-specific checks
+                if (!window.chrome) {
+                    window.chrome = {
+                        runtime: {}
+                    };
+                }
+                
+                // Mask permissions
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                        Promise.resolve({ state: 'denied', onchange: null }) :
+                        originalQuery(parameters)
+                );
+                
+                // Mock plugins to look like real Chrome
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5]
+                });
+                
+                // Mock languages
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['en-US', 'en']
+                });
+            """)
+
+        # Add listener to prevent auto-dismissal of dialogs (alerts/confirms)
+        self.page.on("dialog", lambda dialog: print(f"Dialog opened: {dialog.message}"))
 
     def stop(self):
         if self.context:
@@ -229,6 +267,16 @@ class PrenotamiBot:
             )
         except PlaywrightTimeoutError:
             logging.warning("Timeout waiting for ALL form dropdowns. Form might not be ready.")
+            try:
+                # Debug: Screenshot and dump content
+                timestamp = int(time.time())
+                screenshot_path = f"debug_timeout_{timestamp}.png"
+                self.page.screenshot(path=screenshot_path)
+                logging.info(f"Saved debug screenshot to {screenshot_path}")
+                logging.info(f"Page Title: {self.page.title()}")
+                logging.info(f"Page Content Snippet: {self.page.content()[:500]}")
+            except Exception as e:
+                logging.error(f"Failed to save debug info: {e}")
             return False
 
         form_valid = True
