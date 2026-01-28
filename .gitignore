@@ -7,3 +7,8 @@ form_memory.json
 
 logs/
 *.log
+
+chrome_bot_profile/
+.vscode/launch.json
+*.lock
+.DS_Store

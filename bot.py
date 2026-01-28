@@ -15,8 +15,6 @@ class PrenotamiBot:
         self.browser = None
         self.context = None
         self.page = None
-        self.form_memory_path = 'form_memory.json'
-        self.form_data = self._load_form_memory()
 
         # Sanity check for residence_proof_file
         if 'residence_proof_file' in self.config and self.config['residence_proof_file']:
@@ -27,60 +25,87 @@ class PrenotamiBot:
         with open(path, 'r') as f:
             return json.load(f)
 
-    def _load_form_memory(self):
-        if os.path.exists(self.form_memory_path):
-            try:
-                with open(self.form_memory_path, 'r') as f:
-                    return json.load(f)
-            except:
-                return {}
-        return {}
-
-    def _save_form_memory(self):
-        with open(self.form_memory_path, 'w') as f:
-            json.dump(self.form_data, f, indent=4)
-
     def start(self):
         self.playwright = sync_playwright().start()
-        browser_type = self.config.get('browser_type', 'chrome').lower()
+        browser_type_str = self.config.get('browser_type', 'chrome').lower()
+        disable_extensions = self.config.get('disable_extensions', False)
+        headless = self.config.get('headless', False)
         
-        if browser_type == 'safari':
-            logging.info("Launching Safari (WebKit)...")
-            self.browser = self.playwright.webkit.launch(
-                headless=self.config.get('headless', False)
-            )
-        elif browser_type == 'edge':
-            logging.info("Launching Microsoft Edge...")
-            self.browser = self.playwright.chromium.launch(
-                headless=self.config.get('headless', False),
-                channel='msedge',
-                args=['--start-maximized', '--disable-features=Translate']
-            )
-        elif browser_type == 'firefox':
-            logging.info("Launching Firefox...")
-            self.browser = self.playwright.firefox.launch(
-                headless=self.config.get('headless', False),
-                firefox_user_prefs={
-                    "browser.translations.enable": False,
-                    "browser.translations.panelShown": False,
-                    "browser.translations.autoTranslate": False
-                }
-            )
+        launch_args = ['--start-maximized', '--disable-features=Translate']
+        if disable_extensions:
+            launch_args.append('--disable-extensions')
+        
+        # LOGIC BRANCH 1: Safari / Firefox (Standard Launch, No Persistent Profile)
+        if browser_type_str in ['safari', 'firefox']:
+            if browser_type_str == 'safari':
+                logging.info("Launching Safari (WebKit)...")
+                browser_engine = self.playwright.webkit
+            else:
+                logging.info("Launching Firefox...")
+                browser_engine = self.playwright.firefox
+
+            logging.warning(f"Using standard launch for {browser_type_str} (No persistent profile).")
+            self.browser = browser_engine.launch(headless=headless, args=launch_args)
+            self.context = self.browser.new_context(no_viewport=True)
+            self.page = self.context.new_page()
+
+        # LOGIC BRANCH 2: Chrome / Edge (Persistent Profile)
         else:
-            # Default to Chrome
-            logging.info("Launching Chrome...")
-            self.browser = self.playwright.chromium.launch(
-                headless=self.config.get('headless', False),
-                channel='chrome',
-                args=['--start-maximized', '--disable-features=Translate']
-            )
+            # Chrome/Edge
+            logging.info(f"Launching {browser_type_str} (Chromium)...")
+            browser_engine = self.playwright.chromium
+            
+            # Enforce local dedicated profile for stability
+            config_profile_path = self.config.get('chrome_profile_path')
+            if config_profile_path:
+                chrome_profile_path = os.path.abspath(os.path.expanduser(config_profile_path))
+            else:
+                chrome_profile_path = os.path.join(os.getcwd(), "chrome_bot_profile")
+            
+            logging.info(f"Using Dedicated Bot Profile: {chrome_profile_path}")
+            
+            if not os.path.exists(chrome_profile_path):
+                 logging.info("Profile not found. Creating new profile... (You will need to login once)")
+            
+            try:
+                # Persistent context launches the browser AND context together
+                logging.info("Attempting to launch persistent context...")
+
+                self.context = browser_engine.launch_persistent_context(
+                    user_data_dir=chrome_profile_path,
+                    headless=headless,
+                    channel='chrome' if browser_type_str == 'chrome' else 'msedge',
+                    args=launch_args,
+                    no_viewport=True, # Important to match window size
+                    ignore_default_args=["--enable-automation"],
+                    timeout=60000 
+                )
+                logging.info("Browser launched successfully.")
+            except Exception as e:
+                msg = str(e)
+                if "SingletonLock" in msg or "ProcessSingleton" in msg or "File exists" in msg:
+                    logging.error("❌ CHROME INVALID STATE: It appears Chrome is already running.")
+                    logging.error("👉 ACTION REQUIRED: Ensure no stale chrome processes are running.")
+                    sys.exit(1)
+                raise e
+
+            self.browser = None # Managed by context
+            
+            if self.context.pages:
+                self.page = self.context.pages[0]
+                logging.info("Attached to existing first page.")
+            else:
+                self.page = self.context.new_page()
+                logging.info("Created new page.")
+
+            # Force bring to front/check
+            try:
+                url = self.page.url
+                logging.info(f"Current page URL: {url}")
+            except Exception as e:
+                logging.error(f"Failed to check page URL: {e}")
         
-        self.context = self.browser.new_context(
-             locale=self.config.get('language', 'en-US'),
-             no_viewport=True
-        )
-        self.page = self.context.new_page()
-        # Add listener to prevent auto-dismissal of dialogs (alerts/confirms)
+        # Common setup
         self.page.on("dialog", lambda dialog: logging.info(f"Dialog opened: {dialog.message}"))
 
     def stop(self):
@@ -99,7 +124,6 @@ class PrenotamiBot:
              logging.info("Already logged in.")
              return True
 
-        service_id = self.config.get('service_id', '4996')
         # login_url = f"https://prenotami.esteri.it/Home?ReturnUrl=%2fServices%2fBooking%2f{service_id}"
         login_url = f"https://prenotami.esteri.it/"
 
@@ -124,7 +148,7 @@ class PrenotamiBot:
         
         # Wait for navigation/reload
         self.page.wait_for_load_state('networkidle', timeout=10000)
-        
+       
         # Verify
         if self.is_logged_in():
             logging.info("Login successful!")
@@ -136,11 +160,6 @@ class PrenotamiBot:
         """
         Switches the website language using specific href tags.
         """
-        # Selectors based on user info
-        # IT: <a class="" href="/Language/ChangeLanguage?lang=1">ITA</a>
-        # EN: <a class="active" href="/Language/ChangeLanguage?lang=2">ENG</a>
-        
-        # Note: The selectors are precise based on href
         it_selector = "a[href*='/Language/ChangeLanguage?lang=1']"
         en_selector = "a[href*='/Language/ChangeLanguage?lang=2']"
 
@@ -152,7 +171,6 @@ class PrenotamiBot:
         
         # If buttons aren't found, we can't switch
         if en_btn.count() == 0 or it_btn.count() == 0:
-            # logging.debug("Language buttons not found. Skipping switch.")
             return
 
         en_active = "active" in (en_btn.get_attribute("class") or "")
@@ -162,8 +180,6 @@ class PrenotamiBot:
             if en_active:
                 logging.info("English is already active.")
                 return
-            # User advised: If server switches back to IT, skip switching to EN.
-            # We will try ONCE. If we are here, it means EN is not active.
             logging.info("Switching to English...")
             en_btn.click()
             self.page.wait_for_load_state('networkidle')
@@ -171,7 +187,6 @@ class PrenotamiBot:
             if it_active:
                 logging.info("Italian is already active.")
                 return
-            
             logging.info("Switching to Italian (Explicitly requested)...")
             it_btn.click()
             self.page.wait_for_load_state('networkidle')
@@ -192,8 +207,9 @@ class PrenotamiBot:
         """
         Checks if the current URL suggests a Captcha/WAF block.
         """
-        if "perfdrive.com" in self.page.evaluate("window.location.href").lower():
-            logging.warning(f"Captcha URL: {self.page.evaluate('window.location.href')}")
+        href = self.page.evaluate("window.location.href")
+        if "perfdrive.com" in href.lower():
+            logging.warning(f"Captcha URL: {href}")
             return True
         return False
 
@@ -278,7 +294,7 @@ class PrenotamiBot:
                 if "/BookingCalendar" in current_url:
                     logging.info(f"Status: Booking Calendar reached ({current_url}). Action: Handover")
                     self.play_alert_sound()
-                    break
+                    break 
 
                 elif "/Services/Booking" in current_url:
                     logging.info(f"Status: Booking Form ({current_url}). Action: Fill & Submit")
@@ -291,12 +307,8 @@ class PrenotamiBot:
                     # All else -> Go to Booking Page
                     logging.info(f"Status: Other URL ({current_url}). Action: Go to Booking Page")
                     if current_url != booking_url:
-                        self.page.goto(booking_url)
-                        # We don't wait indefinitely here, just enough to start loading
-                        try:
-                            self.page.wait_for_load_state('networkidle', timeout=10000)
-                        except:
-                            pass
+                        self.page.goto(booking_url)                            
+                        self.page.wait_for_load_state('networkidle', timeout=10000)
                 else:
                     logging.warning(f"login failed, retry in {retry_interval}s")
                     time.sleep(self.config.get('retry_interval', 1))    
@@ -318,7 +330,6 @@ class PrenotamiBot:
     def play_alert_sound(self, duration_seconds=None):
         """
         Plays system alert sound for a specified duration.
-        If duration_seconds is None, defaults to config['alert_duration_minutes'].
         """
         try:
             if duration_seconds is None:
@@ -329,21 +340,15 @@ class PrenotamiBot:
 
             while time.time() < end_time:
                 if system_name == 'Darwin':
-                    # Glass sound + Voice
                     os.system('afplay /System/Library/Sounds/Glass.aiff')
                     os.system('say "Booking ready! Check now!"')
                 elif system_name == 'Windows':
-                    # Windows
                     import winsound
-                    # Siren-like effect
                     winsound.Beep(1000, 400)
                     winsound.Beep(2500, 400)
                 else:
-                    # Fallback for other OS
-                    logging.warning('Sound beep (non-Darwin/Windows)') # Beep
+                    logging.warning('Sound beep') 
                 
-                # Small pause to avoid CPU hogging if sounds are very short
                 time.sleep(0.5)
         except Exception as e:
             logging.error(f"Sound error: {e}")
-            logging.warning('Sound beep (fallback)') # Fallback beep
