@@ -101,6 +101,10 @@ class PrenotamiBot:
         # Navigate
         self.page.goto(login_url, timeout=60000)
         
+        if self.is_captcha_page():
+            print("Captcha/WAF detected after login page navigation.")
+            return False
+        
         # Check if session persisted
         if self.is_logged_in():
             print("Already logged in after navigation.")
@@ -251,6 +255,7 @@ class PrenotamiBot:
     def run(self):
         self.start()
         service_id = self.config.get('service_id', '4996')
+        retry_interval = self.config.get('retry_interval', 5)
         booking_url = f"https://prenotami.esteri.it/Services/Booking/{service_id}"
         
         while True:
@@ -258,16 +263,11 @@ class PrenotamiBot:
                 current_url = self.page.url
 
                 # 1. Check URL Actions
-                if self.is_captcha_page():
-                    print(f"Status: Captcha/WAF detected ({current_url}). Action: Wait for User")
-                    self.play_alert_sound()
-                    # Wait for user to change page
-                    while self.is_captcha_page():
-                         time.sleep(1)
-                    print("Captcha solved/URL changed. Resuming...")
-                    continue
+                while self.is_captcha_page():
+                    print(f"Captcha detected. Playing alert and waiting for {retry_interval}s...")
+                    self.play_alert_sound(duration_seconds=retry_interval)
 
-                elif "/BookingCalendar" in current_url:
+                if "/BookingCalendar" in current_url:
                     print(f"Status: Booking Calendar reached ({current_url}). Action: Handover")
                     self.play_alert_sound()
                     break
@@ -304,38 +304,35 @@ class PrenotamiBot:
         while True:
             time.sleep(1)
 
-    def play_alert_sound(self):
+    def play_alert_sound(self, duration_seconds=None):
         """
-        Plays a system alert sound for configured duration (default 10 mins).
-        Supports macOS (afplay/say) and Windows (winsound). Fallback to generic beep.
+        Plays system alert sound for a specified duration.
+        If duration_seconds is None, defaults to config['alert_duration_minutes'].
         """
         try:
-            duration_mins = self.config.get('alert_duration_minutes', 10)
-            end_time = time.time() + (duration_mins * 60)
-            print(f"Playing ALARM sound for {duration_mins} minutes...")
+            if duration_seconds is None:
+                duration_seconds = self.config.get('alert_duration_minutes', 10) * 60
             
+            end_time = time.time() + duration_seconds
             system_name = platform.system()
 
-            if system_name == 'Darwin':
-                # Play a system sound on macOS
-                while time.time() < end_time:
+            while time.time() < end_time:
+                if system_name == 'Darwin':
                     # Glass sound + Voice
                     os.system('afplay /System/Library/Sounds/Glass.aiff')
                     os.system('say "Booking ready! Check now!"')
-                    time.sleep(1) 
-            elif system_name == 'Windows':
-                # Windows
-                import winsound
-                while time.time() < end_time:
+                elif system_name == 'Windows':
+                    # Windows
+                    import winsound
                     # Siren-like effect
                     winsound.Beep(1000, 400)
                     winsound.Beep(2500, 400)
-            else:
-                # Fallback for other OS
-                while time.time() < end_time:
+                else:
+                    # Fallback for other OS
                     print('\a') # Beep
-                    time.sleep(1)
+                
+                # Small pause to avoid CPU hogging if sounds are very short
+                time.sleep(0.5)
         except Exception as e:
             print(f"Sound error: {e}")
             print('\a') # Fallback beep
-            # self.stop() # Don't stop automatically so user can see result
