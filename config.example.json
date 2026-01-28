@@ -9,5 +9,7 @@
     "alert_duration_minutes": 10,
     "residence_address": "123 Example St, City, Country",
     "residence_proof_file": "/absolute/path/to/proof.pdf",
-    "booking_notes": "Visita per turismo"
+    "booking_notes": "Visita per turismo",
+    "chrome_profile_path": "/Users/<username>/Library/Application Support/Google/Chrome",
+    "disable_extensions": true
 }
