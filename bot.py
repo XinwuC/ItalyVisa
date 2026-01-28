@@ -18,6 +18,11 @@ class PrenotamiBot:
         self.form_memory_path = 'form_memory.json'
         self.form_data = self._load_form_memory()
 
+        # Sanity check for residence_proof_file
+        if 'residence_proof_file' in self.config and self.config['residence_proof_file']:
+            if not os.path.exists(self.config['residence_proof_file']):
+                raise FileNotFoundError(f"Residence proof file not found at: {self.config['residence_proof_file']}")
+
     def _load_config(self, path):
         with open(path, 'r') as f:
             return json.load(f)
