@@ -3,6 +3,7 @@ import time
 import os
 import sys
 import platform
+import logging
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 
 class PrenotamiBot:
@@ -39,19 +40,19 @@ class PrenotamiBot:
         browser_type = self.config.get('browser_type', 'chrome').lower()
         
         if browser_type == 'safari':
-            print("Launching Safari (WebKit)...")
+            logging.info("Launching Safari (WebKit)...")
             self.browser = self.playwright.webkit.launch(
                 headless=self.config.get('headless', False)
             )
         elif browser_type == 'edge':
-            print("Launching Microsoft Edge...")
+            logging.info("Launching Microsoft Edge...")
             self.browser = self.playwright.chromium.launch(
                 headless=self.config.get('headless', False),
                 channel='msedge',
                 args=['--start-maximized', '--disable-features=Translate']
             )
         elif browser_type == 'firefox':
-            print("Launching Firefox...")
+            logging.info("Launching Firefox...")
             self.browser = self.playwright.firefox.launch(
                 headless=self.config.get('headless', False),
                 firefox_user_prefs={
@@ -62,7 +63,7 @@ class PrenotamiBot:
             )
         else:
             # Default to Chrome
-            print("Launching Chrome...")
+            logging.info("Launching Chrome...")
             self.browser = self.playwright.chromium.launch(
                 headless=self.config.get('headless', False),
                 channel='chrome',
@@ -75,7 +76,7 @@ class PrenotamiBot:
         )
         self.page = self.context.new_page()
         # Add listener to prevent auto-dismissal of dialogs (alerts/confirms)
-        self.page.on("dialog", lambda dialog: print(f"Dialog opened: {dialog.message}"))
+        self.page.on("dialog", lambda dialog: logging.info(f"Dialog opened: {dialog.message}"))
 
     def stop(self):
         if self.context:
@@ -90,28 +91,28 @@ class PrenotamiBot:
         Attempts to log in once. Returns True if successful or already logged in, False otherwise.
         """
         if self.is_logged_in():
-             print("Already logged in.")
+             logging.info("Already logged in.")
              return True
 
         service_id = self.config.get('service_id', '4996')
         # login_url = f"https://prenotami.esteri.it/Home?ReturnUrl=%2fServices%2fBooking%2f{service_id}"
         login_url = f"https://prenotami.esteri.it/"
 
-        print(f"Loggin in...")
+        logging.info(f"Loggin in...")
         # Navigate
         self.page.goto(login_url, timeout=60000)
         
         if self.is_captcha_page():
-            print("Captcha/WAF detected after login page navigation.")
+            logging.warning("Captcha/WAF detected after login page navigation.")
             return False
         
         # Check if session persisted
         if self.is_logged_in():
-            print("Already logged in after navigation.")
+            logging.info("Already logged in after navigation.")
             return True
 
         # Fill & Submit
-        print("Filling credentials...")
+        logging.info("Filling credentials...")
         self.page.fill("#login-email", self.config['email'])
         self.page.fill("#login-password", self.config['password'])
         self.page.click("#captcha-trigger")
@@ -121,7 +122,7 @@ class PrenotamiBot:
         
         # Verify
         if self.is_logged_in():
-            print("Login successful!")
+            logging.info("Login successful!")
             return True
 
         return False
@@ -146,7 +147,7 @@ class PrenotamiBot:
         
         # If buttons aren't found, we can't switch
         if en_btn.count() == 0 or it_btn.count() == 0:
-            # print("Language buttons not found. Skipping switch.")
+            # logging.debug("Language buttons not found. Skipping switch.")
             return
 
         en_active = "active" in (en_btn.get_attribute("class") or "")
@@ -154,19 +155,19 @@ class PrenotamiBot:
 
         if is_en_target:
             if en_active:
-                print("English is already active.")
+                logging.info("English is already active.")
                 return
             # User advised: If server switches back to IT, skip switching to EN.
             # We will try ONCE. If we are here, it means EN is not active.
-            print("Switching to English...")
+            logging.info("Switching to English...")
             en_btn.click()
             self.page.wait_for_load_state('networkidle')
         else:
             if it_active:
-                print("Italian is already active.")
+                logging.info("Italian is already active.")
                 return
             
-            print("Switching to Italian (Explicitly requested)...")
+            logging.info("Switching to Italian (Explicitly requested)...")
             it_btn.click()
             self.page.wait_for_load_state('networkidle')
 
@@ -186,12 +187,15 @@ class PrenotamiBot:
         """
         Checks if the current URL suggests a Captcha/WAF block.
         """
-        return "perfdrive.com" in self.page.url.lower()
+        if "perfdrive.com" in self.page.evaluate("window.location.href").lower():
+            logging.warning(f"Captcha URL: {self.page.evaluate('window.location.href')}")
+            return True
+        return False
 
     def fill_booking_form(self):
-        print("Attempting to auto-fill form...")
+        logging.info("Attempting to auto-fill form...")
         
-        print("Checking if form is ready (all dropdowns loaded)...")
+        logging.info("Checking if form is ready (all dropdowns loaded)...")
         # Wait for dropdown options (confirm JS loaded)
         try:
             self.page.wait_for_function(
@@ -203,7 +207,7 @@ class PrenotamiBot:
                 timeout=5000
             )
         except PlaywrightTimeoutError:
-            print("Timeout waiting for ALL form dropdowns. Form might not be ready.")
+            logging.warning("Timeout waiting for ALL form dropdowns. Form might not be ready.")
             return False
 
         form_valid = True
@@ -216,14 +220,14 @@ class PrenotamiBot:
         
         # 3. Reason for Visit = Tourism (Value 42)
         self.page.select_option("#ddls_1", "42")
-        print("Selected: Individual, Ordinary, Tourism")
+        logging.info("Selected: Individual, Ordinary, Tourism")
 
         # 4. Residence Address
         address = self.config.get('residence_address', '')
         if address:
             self.page.fill("#DatiAddizionaliPrenotante_2___testo", address)
         else:
-            print("Error: 'residence_address' missing.")
+            logging.error("Error: 'residence_address' missing.")
             form_valid = False
         
         # 5. File Upload
@@ -231,7 +235,7 @@ class PrenotamiBot:
         if file_path and os.path.exists(file_path):
             self.page.set_input_files("#File_0", file_path)
         else:
-            print(f"Error: Invalid 'residence_proof_file': {file_path}")
+            logging.error(f"Error: Invalid 'residence_proof_file': {file_path}")
             form_valid = False
 
         # 6. Notes
@@ -244,12 +248,12 @@ class PrenotamiBot:
 
         # 8. Forward
         if form_valid:
-            print("All required fields filled. Clicking Forward...")
+            logging.info("All required fields filled. Clicking Forward...")
             self.page.click("#btnAvanti")
             self.page.wait_for_load_state('networkidle')
             return True
         else:
-            print("Validation failed. Not clicking Forward.")
+            logging.warning("Validation failed. Not clicking Forward.")
             return False
 
     def run(self):
@@ -260,20 +264,19 @@ class PrenotamiBot:
         
         while True:
             try:
-                current_url = self.page.url
-
                 # 1. Check URL Actions
                 while self.is_captcha_page():
-                    print(f"Captcha detected. Playing alert and waiting for {retry_interval}s...")
+                    logging.warning(f"Captcha detected. Playing alert and waiting for {retry_interval}s...")
                     self.play_alert_sound(duration_seconds=retry_interval)
 
+                current_url = self.page.evaluate("window.location.href")
                 if "/BookingCalendar" in current_url:
-                    print(f"Status: Booking Calendar reached ({current_url}). Action: Handover")
+                    logging.info(f"Status: Booking Calendar reached ({current_url}). Action: Handover")
                     self.play_alert_sound()
                     break
 
                 elif "/Services/Booking" in current_url:
-                    print(f"Status: Booking Form ({current_url}). Action: Fill & Submit")
+                    logging.info(f"Status: Booking Form ({current_url}). Action: Fill & Submit")
                     if self.fill_booking_form():
                         # If submission apparently successful, check URL next loop
                         pass
@@ -281,7 +284,7 @@ class PrenotamiBot:
                 elif self.login():
                     self.switch_language("en")
                     # All else -> Go to Booking Page
-                    print(f"Status: Other URL ({current_url}). Action: Go to Booking Page")
+                    logging.info(f"Status: Other URL ({current_url}). Action: Go to Booking Page")
                     if current_url != booking_url:
                         self.page.goto(booking_url)
                         # We don't wait indefinitely here, just enough to start loading
@@ -289,18 +292,21 @@ class PrenotamiBot:
                             self.page.wait_for_load_state('networkidle', timeout=10000)
                         except:
                             pass
+                else:
+                    logging.warning(f"login failed, retry in {retry_interval}s")
+                    time.sleep(self.config.get('retry_interval', 1))    
             except PlaywrightError as e:
                 # Check for "Target page, context or browser has been closed"
                 if "Target page, context or browser has been closed" in str(e):
-                    print("Browser was closed by user. Exiting...")
+                    logging.warning("Browser was closed by user. Exiting...")
                     sys.exit(0)
-                print(f"Playwright error in main loop: {e}")
+                logging.error(f"Playwright error in main loop: {e}")
                 time.sleep(self.config.get('retry_interval', 1))    
             except Exception as e:
-                print(f"Critical error in main loop: {e}")
+                logging.critical(f"Critical error in main loop: {e}")
                 time.sleep(self.config.get('retry_interval', 1))    
             
-        print("Process finished. Keeping browser open.")
+        logging.info("Process finished. Keeping browser open.")
         while True:
             time.sleep(1)
 
@@ -329,10 +335,10 @@ class PrenotamiBot:
                     winsound.Beep(2500, 400)
                 else:
                     # Fallback for other OS
-                    print('\a') # Beep
+                    logging.warning('Sound beep (non-Darwin/Windows)') # Beep
                 
                 # Small pause to avoid CPU hogging if sounds are very short
                 time.sleep(0.5)
         except Exception as e:
-            print(f"Sound error: {e}")
-            print('\a') # Fallback beep
+            logging.error(f"Sound error: {e}")
+            logging.warning('Sound beep (fallback)') # Fallback beep
